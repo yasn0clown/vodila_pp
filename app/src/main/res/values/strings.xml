@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">Vodila</string>
+
+    <!-- Строки для экрана "О разработчиках" -->
+    <string name="about_screen_title">О разработчиках</string>
+    <string name="about_screen_description_line1">Приложение разработано с помощью Kotlin</string>
+    <string name="about_screen_description_line2">(Если вы видите это сообщение - помогите мне монетой) </string>
+
+
+</resources>
