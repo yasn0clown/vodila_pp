@@ -24,6 +24,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
@@ -34,6 +35,7 @@ import java.util.concurrent.Executors
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import java.nio.ByteBuffer
 
 @Composable
 fun VideoScanScreen(
@@ -212,16 +214,66 @@ fun CameraPreview(
 
                 val imageAnalyzer = ImageAnalysis.Builder()
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    //.setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888) // Пока не будем, т.к. нужна своя конвертация
+                    // Если известно, что JNI будет принимать только определенный размер, можно его задать:
+                    // .setTargetResolution(Size(640, 480)) // Убедитесь, что камера поддерживает
                     .build()
-                    .also {
-                        it.setAnalyzer(cameraExecutor!!) { imageProxy ->
-                            viewModel.processCameraFrame(imageProxy)
-                            // На данный момент просто логируем, что кадр получен
-                            // ВАЖНО: imageProxy.close() должен быть вызван после обработки
-                            Log.v("CameraPreview", "Frame received: ${imageProxy.format} ${imageProxy.width}x${imageProxy.height}")
-                            onFrameAnalyzed(imageProxy) // Передаем imageProxy дальше
-                            // imageProxy.close() // Закрывать будем после обработки в ViewModel
+                    .also { analyzer -> // переименовал 'it' в 'analyzer' для ясности
+                        analyzer.setAnalyzer(cameraExecutor!!) { imageProxy ->
+                            try {
+                                if (viewModel.uiState.value.isMonitoringActive) {
+                                    val originalPlanes = imageProxy.planes
+                                    val format = imageProxy.format
+                                    val width = imageProxy.width
+                                    val height = imageProxy.height
+                                    val rotationDegrees = imageProxy.imageInfo.rotationDegrees
+                                    val timestampNanos = imageProxy.imageInfo.timestamp
+
+                                    // Создаем копии PlaneProxy с скопированными данными буфера
+                                    val copiedPlanes = originalPlanes.mapNotNull { originalPlane ->
+                                        // Проверяем, есть ли данные в буфере
+                                        if (originalPlane.buffer == null || originalPlane.buffer.remaining() == 0) {
+                                            Log.w("CameraPreviewAnalyzer", "Original plane buffer is null or empty, skipping this plane.")
+                                            return@mapNotNull null // Пропускаем этот plane, если буфер пуст
+                                        }
+
+                                        val bufferData = ByteArray(originalPlane.buffer.remaining())
+                                        originalPlane.buffer.get(bufferData) // Копируем данные в ByteArray
+
+                                        // Создаем объект, реализующий ImageProxy.PlaneProxy
+                                        object : ImageProxy.PlaneProxy {
+                                            private val copiedBuffer: ByteBuffer = ByteBuffer.wrap(bufferData) // Оборачиваем ByteArray в ByteBuffer
+                                            private val pixelStrideValue: Int = originalPlane.pixelStride
+                                            private val rowStrideValue: Int = originalPlane.rowStride
+
+                                            override fun getBuffer(): ByteBuffer = copiedBuffer.asReadOnlyBuffer() // Возвращаем read-only для безопасности
+                                            override fun getPixelStride(): Int = pixelStrideValue
+                                            override fun getRowStride(): Int = rowStrideValue
+                                        }
+                                    }.toTypedArray<ImageProxy.PlaneProxy>() // Явно указываем тип
+
+                                    // Если после фильтрации не осталось валидных planes, возможно, не стоит создавать FrameData
+                                    if (copiedPlanes.size != originalPlanes.size && originalPlanes.isNotEmpty()) {
+                                        Log.w("CameraPreviewAnalyzer", "Some planes were skipped due to empty buffers. Original: ${originalPlanes.size}, Copied: ${copiedPlanes.size}")
+                                    }
+                                    // Если все planes были пустыми или произошла ошибка, copiedPlanes может быть пустым.
+                                    // Решите, как обрабатывать этот случай. Для простоты пока оставим так.
+
+
+                                    val frameData = VideoScanViewModel.FrameData(
+                                        planes = copiedPlanes,
+                                        format = format,
+                                        width = width,
+                                        height = height,
+                                        rotationDegrees = rotationDegrees,
+                                        timestampNanos = timestampNanos
+                                    )
+                                    viewModel.processFrameData(frameData)
+                                }
+                            } catch (e: Exception) {
+                                Log.e("CameraPreviewAnalyzer", "Error processing image proxy: ${e.message}", e)
+                            } finally {
+                                imageProxy.close()
+                            }
                         }
                     }
 

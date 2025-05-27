@@ -2,22 +2,29 @@ package com.example.pp_androidstudio_avto.ui.screens
 
 import android.app.Application // Используем Application для доступа к Context
 import android.util.Log
+import androidx.camera.core.ImageProxy
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.pp_androidstudio_avto.drivermonitor.DriverMonitorBridge
+import android.graphics.ImageFormat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.Serializable
 import java.io.IOException
+import java.nio.ByteBuffer
 
 // Состояния для UI
 data class VideoScanUiState(
     val isMonitorInitialized: Boolean = false,
     val monitorInitializationError: String? = null,
-    val isMonitoringActive: Boolean = false, // Пользователь нажал "Старт"
-    val lastDetections: List<String> = emptyList(), // Пока просто строки для примера
-    val cameraPermissionGranted: Boolean = false
+    val isMonitoringActive: Boolean = false,
+    val lastDetections: List<String> = emptyList(), // Для текущих отображений на VideoScanScreen
+    val cameraPermissionGranted: Boolean = false,
+    val violationStats: Map<String, Int> = emptyMap() // Статистика нарушений (Тип -> Количество)
 )
 
 class VideoScanViewModel(application: Application) : AndroidViewModel(application) {
@@ -36,6 +43,118 @@ class VideoScanViewModel(application: Application) : AndroidViewModel(applicatio
     init {
         Log.d(TAG, "ViewModel created. Initializing monitor...")
         initializeDriverMonitor()
+    }
+
+    /**
+     * Конвертирует изображение в формате YUV_420_888 (из ImageProxy) в ByteArray формата RGBA.
+     *
+     * @param frameData Данные кадра, содержащие planes, width, height, и format.
+     * @return ByteArray с пикселями в формате RGBA. Размер массива: width * height * 4.
+     */
+    fun convertYuv420ToRgba(frameData: VideoScanViewModel.FrameData): ByteArray {
+        if (frameData.format != ImageFormat.YUV_420_888) {
+            Log.e("YUV_TO_RGBA", "Invalid image format, expected YUV_420_888, got ${frameData.format}")
+            return ByteArray(0) // Возвращаем пустой массив или выбрасываем исключение
+        }
+
+        val width = frameData.width
+        val height = frameData.height
+        val rgbaBytes = ByteArray(width * height * 4)
+
+        val yPlane = frameData.planes[0]
+        val uPlane = frameData.planes[1]
+        val vPlane = frameData.planes[2]
+
+        val yBuffer: ByteBuffer = yPlane.buffer
+        val uBuffer: ByteBuffer = uPlane.buffer
+        val vBuffer: ByteBuffer = vPlane.buffer
+
+        val yRowStride: Int = yPlane.rowStride
+        val yPixelStride: Int = yPlane.pixelStride // Обычно 1 для Y
+
+        val uRowStride: Int = uPlane.rowStride
+        val uPixelStride: Int = uPlane.pixelStride // Обычно 1 или 2 для U/V
+
+        val vRowStride: Int = vPlane.rowStride
+        val vPixelStride: Int = vPlane.pixelStride // Обычно 1 или 2 для U/V
+
+        var yIndex: Int
+        var uvIndexOffset: Int // Смещение для U и V плоскостей
+
+        // Переменные для хранения значений Y, U, V
+        var yValue: Int
+        var uValue: Int
+        var vValue: Int
+
+        // Переменные для хранения RGB
+        var r: Int
+        var g: Int
+        var b: Int
+
+        var outputIndex = 0 // Индекс для записи в rgbaBytes
+
+        for (j in 0 until height) { // j - строка (y-координата)
+            for (i in 0 until width) { // i - столбец (x-координата)
+                // Рассчитываем индекс для Y-плоскости
+                // yBuffer может содержать padding, поэтому используем rowStride
+                yIndex = j * yRowStride + i * yPixelStride
+                yValue = yBuffer[yIndex].toInt() and 0xFF
+
+                // Рассчитываем индексы для U и V плоскостей
+                // U и V имеют вдвое меньшее разрешение.
+                // Для YUV_420_888, U и V могут быть чередованы (NV21) или в отдельных плоскостях (I420).
+                // ImageFormat.YUV_420_888 означает, что у нас 3 отдельные плоскости.
+                // U и V плоскости имеют pixelStride и rowStride.
+                // Один (U,V) пиксель соответствует блоку 2x2 Y пикселей.
+                // Делим j и i на 2, чтобы получить соответствующий индекс в U/V плоскостях.
+                val uvRow = j / 2
+                val uvCol = i / 2
+
+                // Индекс в U-плоскости
+                // Важно: uPixelStride может быть 2, если U и V чередуются в одной плоскости (например, UVUV...).
+                // Но для YUV_420_888 (3 plane) uPixelStride обычно 1 для U, и vPixelStride 1 для V.
+                // Если uPixelStride = 2, то U и V находятся в одной плоскости, чередуясь.
+                // Для YUV_420_888 (PLANAR или SEMI_PLANAR с 3 plane buffers), U и V в отдельных буферах.
+                // planes[1] -> U, planes[2] -> V
+                // Если uPixelStride (planes[1].pixelStride) == 1:
+                uvIndexOffset = uvRow * uRowStride + uvCol * uPixelStride
+                uValue = uBuffer[uvIndexOffset].toInt() and 0xFF
+
+                // Индекс в V-плоскости
+                // Если vPixelStride (planes[2].pixelStride) == 1:
+                uvIndexOffset = uvRow * vRowStride + uvCol * vPixelStride
+                vValue = vBuffer[uvIndexOffset].toInt() and 0xFF
+
+                // Если uPixelStride == 2 (означает, что U и V чередуются в одной плоскости, planes[1] = UV plane)
+                // Это не должно быть для YUV_420_888 с 3 planes, но на всякий случай:
+                // if (uPixelStride == 2) {
+                //     uvIndexOffset = uvRow * uRowStride + uvCol * uPixelStride
+                //     uValue = uBuffer[uvIndexOffset].toInt() and 0xFF // U
+                //     vValue = uBuffer[uvIndexOffset + 1].toInt() and 0xFF // V (следующий байт)
+                // }
+
+                // Конвертация YUV в RGB (стандартные коэффициенты)
+                // Преобразуем V и U в диапазон [-128, 127] для формул
+                val uNorm = uValue - 128
+                val vNorm = vValue - 128
+
+                r = (yValue + 1.370705 * vNorm).toInt()
+                g = (yValue - 0.698001 * vNorm - 0.337633 * uNorm).toInt()
+                b = (yValue + 1.732446 * uNorm).toInt()
+
+                // Ограничиваем значения R, G, B диапазоном [0, 255]
+                r = r.coerceIn(0, 255)
+                g = g.coerceIn(0, 255)
+                b = b.coerceIn(0, 255)
+
+                // Записываем RGBA (A = 255, непрозрачный)
+                rgbaBytes[outputIndex++] = r.toByte()
+                rgbaBytes[outputIndex++] = g.toByte()
+                rgbaBytes[outputIndex++] = b.toByte()
+                rgbaBytes[outputIndex++] = 0xFF.toByte() // Alpha
+            }
+        }
+        return rgbaBytes
     }
 
     fun initializeDriverMonitor() {
@@ -170,17 +289,125 @@ class VideoScanViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     // Эта функция будет вызываться из ImageAnalyzer для обработки кадра
-    fun processCameraFrame(imageProxy: androidx.camera.core.ImageProxy) {
-        if (!_uiState.value.isMonitoringActive) {
-            imageProxy.close()
+    data class FrameData(
+        val planes: Array<ImageProxy.PlaneProxy>, // Или сразу ByteArray, если конвертация будет здесь
+        val format: Int,
+        val width: Int,
+        val height: Int,
+        val rotationDegrees: Int,
+        val timestampNanos: Long // Наносекунды
+    )
+
+    @Serializable
+    data class Violation(
+        val type: String,
+        val description: String,
+        val timestamp: String,
+        val capture_image: Boolean
+    )
+
+    private val jsonParser = Json { ignoreUnknownKeys = true; isLenient = true }
+
+    private fun parseAndHandleDetections(
+        jsonString: String,
+        rgbaFrameForCapture: ByteArray?, // RGBA данные кадра, если нужно фото
+        frameWidth: Int,
+        frameHeight: Int
+    ) {
+        if (jsonString.isBlank() || jsonString == "[]") {
+            // Нет нарушений или пустой результат
+            // Можно сбросить отображение старых нарушений, если нужно
+            // _uiState.value = _uiState.value.copy(lastDetections = emptyList())
             return
         }
-        // Логируем для проверки, что кадры доходят до ViewModel
-        Log.v(TAG, "Frame received in ViewModel: ${imageProxy.width}x${imageProxy.height}, ts: ${imageProxy.imageInfo.timestamp}")
 
-        // TODO: Шаг 4 - Конвертация YUV в RGBA
-        // TODO: Шаг 5 - Передача RGBA в JNI
+        try {
+            val violations = jsonParser.decodeFromString<List<Violation>>(jsonString)
 
-        imageProxy.close() // ВАЖНО: закрыть ImageProxy после использования!
+            if (violations.isNotEmpty()) {
+                Log.i(TAG, "Detected violations: $violations")
+                // Обновляем UI (пока просто списком описаний)
+                val currentDetectionDescriptions = violations.map { "${it.type}: ${it.description}" }
+
+                // Обновляем статистику нарушений
+                val updatedStats = _uiState.value.violationStats.toMutableMap()
+                violations.forEach { violation ->
+                    updatedStats[violation.type] = (updatedStats[violation.type] ?: 0) + 1
+                    if (violation.capture_image && rgbaFrameForCapture != null) {
+                        Log.d(TAG, "Capture image requested for: ${violation.type}")
+                        // TODO: Сохранение изображения (позже)
+                    }
+                    // TODO: Сохранение информации о нарушении в базу данных (позже)
+                }
+                Log.d(TAG, "Updated stats: $updatedStats")
+
+                _uiState.update { currentState ->
+                    currentState.copy(
+                        lastDetections = currentDetectionDescriptions,
+                        violationStats = updatedStats
+                    )
+                }
+
+            } else {
+                _uiState.update { it.copy(lastDetections = emptyList()) }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error parsing JSON violations: $jsonString", e)
+            _uiState.update { it.copy(lastDetections = listOf("Error parsing JNI result")) }
+        }
     }
+
+    fun resetStatistics() {
+        _uiState.update {
+            it.copy(
+                violationStats = emptyMap(),
+                lastDetections = emptyList() // Также сбрасываем текущие отображаемые
+            )
+        }
+        Log.i(TAG, "Statistics reset.")
+    }
+
+    fun processFrameData(frameData: FrameData) {
+        if (!_uiState.value.isMonitoringActive) {
+            return // Мониторинг не активен
+        }
+
+//        Log.v(TAG, "Processing frame data: Format=${frameData.format}, ${frameData.width}x${frameData.height}, Rotation=${frameData.rotationDegrees}, ts: ${frameData.timestampNanos}")
+
+        val rgbaByteArray = convertYuv420ToRgba(frameData) // Вызываем нашу функцию
+
+        if (rgbaByteArray.isEmpty()) {
+            Log.e(TAG, "RGBA conversion failed or returned empty array.")
+            return
+        }
+
+        // Логируем размер полученного массива для проверки
+//        Log.d(TAG, "Converted to RGBA. Array size: ${rgbaByteArray.size}. Expected: ${frameData.width * frameData.height * 4}")
+        // TODO: Шаг 5 - Передача RGBA в JNI
+        //    DriverMonitorBridge.nativeProcessFrameRgba(rgbaByteArray, frameData.width, frameData.height, frameData.timestampNanos / 1000)
+        try {
+            val jsonResult = DriverMonitorBridge.nativeProcessFrameRgba(
+                rgbaByteArray,
+                frameData.width,
+                frameData.height,
+                frameData.timestampNanos / 1000 // Конвертируем наносекунды в микросекунды, как ожидает JNI
+            )
+
+            // Логируем полученный JSON
+//            Log.d(TAG, "JNI Result: $jsonResult")
+
+            // TODO: Шаг 6 - Парсинг JSON и обновление UI/сохранение данных
+            parseAndHandleDetections(jsonResult, rgbaByteArray, frameData.width, frameData.height)
+
+        } catch (e: UnsatisfiedLinkError) {
+            Log.e(TAG, "JNI call failed (UnsatisfiedLinkError): ${e.message}", e)
+            // Возможно, стоит остановить мониторинг или показать ошибку пользователю
+            // _uiState.value = _uiState.value.copy(isMonitoringActive = false, monitorInitializationError = "JNI call failed")
+        } catch (e: Exception) {
+            Log.e(TAG, "JNI call failed (Exception): ${e.message}", e)
+            // Аналогично, обработка ошибки
+        }
+    }
+
+
 }

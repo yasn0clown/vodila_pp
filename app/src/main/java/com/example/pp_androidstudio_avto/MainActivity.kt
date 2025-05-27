@@ -20,6 +20,8 @@ import com.example.pp_androidstudio_avto.navigation.drawerScreens
 import com.example.pp_androidstudio_avto.ui.screens.*
 import com.example.pp_androidstudio_avto.ui.theme.MyAppTheme
 import kotlinx.coroutines.launch
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.pp_androidstudio_avto.ui.screens.VideoScanViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 class MainActivity : ComponentActivity() {
@@ -32,9 +34,12 @@ class MainActivity : ComponentActivity() {
             val scope = rememberCoroutineScope()
 
             // Для отслеживания текущего экрана для заголовка TopAppBar
+            val videoScanViewModel: VideoScanViewModel = viewModel() // ViewModel будет привязана к жизненному циклу NavHost по умолчанию
+
+
             val currentScreen = navController.currentBackStackEntryAsState().value?.destination?.route?.let { route ->
                 drawerScreens.find { it.route == route }
-            } ?: Screen.VideoScan // Экран по умолчанию
+            } ?: Screen.VideoScan
 
             MyAppTheme(darkTheme = isDarkTheme) {
                 ModalNavigationDrawer(
@@ -67,11 +72,12 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                     ) { paddingValues ->
-                        AppNavHost(
+                        AppNavHost( // Передаем ViewModel в NavHost
                             navController = navController,
                             modifier = Modifier.padding(paddingValues),
                             isDarkTheme = isDarkTheme,
-                            onToggleTheme = { isDarkTheme = !isDarkTheme }
+                            onToggleTheme = { isDarkTheme = !isDarkTheme },
+                            videoScanViewModel = videoScanViewModel // <--- ПЕРЕДАЕМ VIEWMODEL
                         )
                     }
                 }
@@ -123,18 +129,19 @@ fun AppNavHost(
     navController: NavHostController,
     modifier: Modifier = Modifier,
     isDarkTheme: Boolean,
-    onToggleTheme: () -> Unit
+    onToggleTheme: () -> Unit,
+    videoScanViewModel: VideoScanViewModel // <--- ПРИНИМАЕМ VIEWMODEL
 ) {
     NavHost(
         navController = navController,
-        startDestination = Screen.VideoScan.route, // Начальный экран
+        startDestination = Screen.VideoScan.route,
         modifier = modifier
     ) {
         composable(Screen.VideoScan.route) {
-            VideoScanScreen()
+            VideoScanScreen(viewModel = videoScanViewModel) // <--- ИСПОЛЬЗУЕМ ПЕРЕДАННУЮ VIEWMODEL
         }
         composable(Screen.Statistics.route) {
-            StatisticsScreen()
+            StatisticsScreen(viewModel = videoScanViewModel) // <--- ИСПОЛЬЗUЕМ ПЕРЕДАННУЮ VIEWMODEL
         }
         composable(Screen.Settings.route) {
             SettingsScreen(isDarkTheme = isDarkTheme, onToggleTheme = onToggleTheme)
