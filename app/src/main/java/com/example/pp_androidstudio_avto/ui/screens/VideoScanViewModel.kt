@@ -159,4 +159,28 @@ class VideoScanViewModel(application: Application) : AndroidViewModel(applicatio
             }
         }
     }
+
+    fun handleCameraError(errorMessage: String?) {
+        _uiState.value = _uiState.value.copy(
+            isMonitoringActive = false, // Останавливаем мониторинг при ошибке камеры
+            // Можно добавить специальное поле для ошибки камеры, если нужно
+            // cameraErrorMessage = errorMessage
+        )
+        Log.e(TAG, "Camera Error: $errorMessage")
+    }
+
+    // Эта функция будет вызываться из ImageAnalyzer для обработки кадра
+    fun processCameraFrame(imageProxy: androidx.camera.core.ImageProxy) {
+        if (!_uiState.value.isMonitoringActive) {
+            imageProxy.close()
+            return
+        }
+        // Логируем для проверки, что кадры доходят до ViewModel
+        Log.v(TAG, "Frame received in ViewModel: ${imageProxy.width}x${imageProxy.height}, ts: ${imageProxy.imageInfo.timestamp}")
+
+        // TODO: Шаг 4 - Конвертация YUV в RGBA
+        // TODO: Шаг 5 - Передача RGBA в JNI
+
+        imageProxy.close() // ВАЖНО: закрыть ImageProxy после использования!
+    }
 }
