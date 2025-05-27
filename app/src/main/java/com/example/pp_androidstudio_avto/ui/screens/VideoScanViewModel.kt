@@ -48,6 +48,8 @@ class VideoScanViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             try {
                 val appContext = getApplication<Application>().applicationContext
+                val assetManager = appContext.assets
+                val cacheDir = appContext.cacheDir.absolutePath
                 val faceMeshGraphContent = readAssetFile(FACE_MESH_GRAPH_FILE)
                 val handTrackingGraphContent = try {
                     readAssetFile(HAND_TRACKING_GRAPH_FILE)
@@ -67,6 +69,8 @@ class VideoScanViewModel(application: Application) : AndroidViewModel(applicatio
 
                 Log.d(TAG, "Attempting to initialize native library...")
                 val success = DriverMonitorBridge.nativeInitialize(
+                    assetManager,
+                    cacheDir,
                     faceMeshGraphContent,
                     handTrackingGraphContent
                 )

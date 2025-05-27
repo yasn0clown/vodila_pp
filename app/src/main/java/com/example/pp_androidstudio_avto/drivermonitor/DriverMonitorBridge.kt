@@ -1,8 +1,10 @@
 package com.example.pp_androidstudio_avto.drivermonitor
+import android.content.res.AssetManager
 
 object DriverMonitorBridge {
     init {
         try {
+            System.loadLibrary("opencv_java4");
             System.loadLibrary("driver_monitor_jni_lib") // Убедись, что это имя вашей библиотеки
         } catch (e: UnsatisfiedLinkError) {
             // Обработка ошибки, если библиотека не найдена.
@@ -22,6 +24,8 @@ object DriverMonitorBridge {
      * @return true в случае успеха, false в случае ошибки.
      */
     external fun nativeInitialize(
+        assetManager: AssetManager,
+        cacheDirPath: String,
         faceMeshGraphContent: String,
         handTrackingGraphContent: String?
     ): Boolean
